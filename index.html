@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Talking Tom - Interactive Talking Cat</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app-container">
+        <!-- Cozy 3D Room Background -->
+        <div class="room-background">
+            <div class="wall">
+                <div class="wallpaper-pattern"></div>
+            </div>
+            <div class="floor"></div>
+            <div class="carpet"></div>
+        </div>
+
+        <!-- Top Header Bar -->
+        <header class="header-bar">
+            <div class="title-container">
+                <span class="app-logo">🐱</span>
+                <h1>Talking Tom</h1>
+            </div>
+
+            <div id="statusPill" class="status-pill idle">
+                <span class="status-dot"></span>
+                <span id="statusText">Idle</span>
+            </div>
+
+            <button id="settingsToggleBtn" class="settings-toggle-btn" title="Settings">⚙️</button>
+        </header>
+
+        <!-- Settings Panel Drawer -->
+        <div id="settingsPanel" class="settings-panel">
+            <div class="settings-title">
+                <span>Tom Settings</span>
+                <button id="closeSettingsBtn" class="close-settings-btn">✕</button>
+            </div>
+            <div class="setting-group">
+                <label for="pitchSlider">
+                    <span>Voice Pitch (Speed):</span>
+                    <span id="pitchVal">1.38x</span>
+                </label>
+                <input type="range" id="pitchSlider" min="1.1" max="1.8" step="0.05" value="1.38">
+            </div>
+            <div class="setting-group">
+                <label for="sensitivitySlider">
+                    <span>Mic Sensitivity (VAD):</span>
+                    <span id="sensitivityVal">0.035</span>
+                </label>
+                <input type="range" id="sensitivitySlider" min="0.01" max="0.10" step="0.005" value="0.035">
+            </div>
+        </div>
+
+        <!-- Main Tom Viewport -->
+        <main class="canvas-wrapper">
+            <canvas id="tomCanvas" width="500" height="580"></canvas>
+
+            <!-- Real-time Volume Level Meter -->
+            <div class="volume-meter-wrapper" title="Microphone Input Level">
+                <div id="volumeMeterBar" class="volume-meter-bar"></div>
+            </div>
+        </main>
+
+        <!-- Bottom Action Bar -->
+        <nav class="bottom-bar">
+            <button id="milkBtn" class="action-btn" title="Feed Tom Milk">
+                <span class="btn-icon">🥛</span>
+                <span class="btn-label">Feed</span>
+            </button>
+
+            <button id="fartBtn" class="action-btn" title="Make Fart Sound">
+                <span class="btn-icon">💨</span>
+                <span class="btn-label">Fart</span>
+            </button>
+
+            <button id="micBtn" class="action-btn mic-btn" title="Toggle Microphone Listening">
+                <span class="btn-icon">🎤</span>
+                <span class="btn-label">Listen</span>
+            </button>
+
+            <button id="slapBtn" class="action-btn" title="Slap Tom">
+                <span class="btn-icon">👋</span>
+                <span class="btn-label">Slap</span>
+            </button>
+
+            <button id="petBtn" class="action-btn" title="Pet Tom to Purr">
+                <span class="btn-icon">🐾</span>
+                <span class="btn-label">Pet</span>
+            </button>
+        </nav>
+
+        <!-- Onboarding / Microphone Access Start Modal -->
+        <div id="startModal" class="modal-overlay">
+            <div class="modal-card">
+                <div class="modal-icon">🐱🎤</div>
+                <h2>Meet Talking Tom!</h2>
+                <p>Speak into your microphone and Tom will listen and repeat everything you say in his cute high-pitched voice!</p>
+                <p>You can also poke his head, tummy, feet, feed him milk, slap, fart, or pet him to make him purr.</p>
+                <button id="startAppBtn" class="start-btn">Start Playing!</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Scripts -->
+    <script src="audio.js"></script>
+    <script src="tom.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
