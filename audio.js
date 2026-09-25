@@ -24,7 +24,7 @@ class TalkingTomAudio {
         this.sampleRate = 44100;
         
         // Voice pitch modifier
-        this.pitchRatio = 1.38; // 1.38x speed & pitch for classic Tom voice
+        this.pitchRatio = 1.18; // 1.18x speed & pitch for classic legible Tom voice
 
         // Callbacks
         this.onStateChange = null; // (state: 'idle'|'listening'|'recording'|'talking')
@@ -270,11 +270,15 @@ class TalkingTomAudio {
     }
 
     async playSlap() {
+        return this.playSlapLeft();
+    }
+
+    async playSlapLeft() {
         await this.init();
         const now = this.ctx.currentTime;
 
-        // Noise buffer for slap impact
-        const bufferSize = this.ctx.sampleRate * 0.15;
+        // High sharp slap snap
+        const bufferSize = this.ctx.sampleRate * 0.12;
         const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
         const data = buffer.getChannelData(0);
         for (let i = 0; i < bufferSize; i++) {
@@ -285,34 +289,48 @@ class TalkingTomAudio {
         noise.buffer = buffer;
 
         const filter = this.ctx.createBiquadFilter();
-        filter.type = 'bandpass';
-        filter.frequency.setValueAtTime(1200, now);
-        filter.Q.setValueAtTime(1.5, now);
+        filter.type = 'highpass';
+        filter.frequency.setValueAtTime(800, now);
 
         const gain = this.ctx.createGain();
-        gain.gain.setValueAtTime(0.6, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
-
-        // Low body thump for extra slap realism
-        const thump = this.ctx.createOscillator();
-        const thumpGain = this.ctx.createGain();
-        thump.type = 'sine';
-        thump.frequency.setValueAtTime(180, now);
-        thump.frequency.exponentialRampToValueAtTime(40, now + 0.12);
-        thumpGain.gain.setValueAtTime(0.5, now);
-        thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+        gain.gain.setValueAtTime(0.7, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
 
         noise.connect(filter);
         filter.connect(gain);
         gain.connect(this.ctx.destination);
 
-        thump.connect(thumpGain);
-        thumpGain.connect(this.ctx.destination);
-
         noise.start(now);
-        thump.start(now);
-        noise.stop(now + 0.15);
-        thump.stop(now + 0.15);
+        noise.stop(now + 0.12);
+        this.playOuch();
+    }
+
+    async playSlapRight() {
+        await this.init();
+        const now = this.ctx.currentTime;
+
+        // Deep heavy punch thump
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(220, now);
+        osc.frequency.exponentialRampToValueAtTime(40, now + 0.15);
+
+        gain.gain.setValueAtTime(0.8, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(now);
+        osc.stop(now + 0.15);
+        this.playOuch();
+    }
+
+    async playHeavySlap() {
+        await this.playSlapLeft();
+        await this.playSlapRight();
+        this.playDizzyChimes();
     }
 
     async playOuch() {

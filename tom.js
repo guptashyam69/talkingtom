@@ -17,7 +17,7 @@ class TalkingTomRenderer {
         this.targetX = this.width / 2;
         this.targetY = this.height / 2;
         
-        // Animation States: 'idle', 'listening', 'recording', 'talking', 'dizzy', 'belly_poke', 'foot_poke', 'drinking', 'farting', 'petting'
+        // Animation States: 'idle', 'listening', 'recording', 'talking', 'slap_left', 'slap_right', 'dizzy', 'belly_poke', 'foot_poke', 'drinking', 'farting', 'petting'
         this.state = 'idle';
         this.stateTimer = 0;
 
@@ -40,14 +40,14 @@ class TalkingTomRenderer {
         this.leftHandOffset = { x: 0, y: 0 };
         this.rightHandOffset = { x: 0, y: 0 };
 
-        // Particles (stars, hearts, fart cloud, milk drops)
+        // Particles (stars, hearts, fart cloud, impact bursts)
         this.particles = [];
 
         // Milk prop state
         this.milkProgress = 0;
 
         // Callback for hit detection events
-        this.onHitZone = null; // (zoneName)
+        this.onHitZone = null; // (zoneName, canvasX, canvasY)
 
         this.initEvents();
     }
@@ -83,7 +83,7 @@ class TalkingTomRenderer {
 
             const hitZone = this.checkHitZone(canvasX, canvasY);
             if (hitZone && this.onHitZone) {
-                this.onHitZone(hitZone);
+                this.onHitZone(hitZone, canvasX, canvasY);
             }
         };
 
@@ -100,7 +100,11 @@ class TalkingTomRenderer {
 
         // Head hit zone
         const headDist = Math.hypot(x - cx, y - (cy - 120));
-        if (headDist < 95) return 'head';
+        if (headDist < 95) {
+            if (x < cx - 25) return 'head_left';
+            if (x > cx + 25) return 'head_right';
+            return 'head_center';
+        }
 
         // Belly hit zone
         const bellyDist = Math.hypot(x - cx, y - (cy + 25));
@@ -121,7 +125,7 @@ class TalkingTomRenderer {
         return null;
     }
 
-    setState(newState, duration = 0) {
+    setState(newState, duration = 0, hitX = null, hitY = null) {
         this.state = newState;
         this.stateTimer = duration > 0 ? performance.now() + duration : 0;
 
@@ -132,10 +136,30 @@ class TalkingTomRenderer {
         } else if (newState === 'farting') {
             this.spawnFartCloud();
         }
+
+        if (hitX !== null && hitY !== null) {
+            this.spawnImpactBurst(hitX, hitY);
+        }
     }
 
     setMouthOpen(level) {
         this.mouthOpen = Math.min(1, Math.max(0, level));
+    }
+
+    spawnImpactBurst(x, y) {
+        for (let i = 0; i < 8; i++) {
+            const angle = (i / 8) * Math.PI * 2;
+            const speed = 4 + Math.random() * 4;
+            this.particles.push({
+                type: 'impact',
+                x: x,
+                y: y,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                radius: 6 + Math.random() * 6,
+                life: 1.0
+            });
+        }
     }
 
     spawnDizzyStars() {
@@ -211,7 +235,7 @@ class TalkingTomRenderer {
         // Tail Swaying Physics
         this.tailAngle = Math.sin(this.time * 0.8) * 0.25;
 
-        // Head and Body Idling Animation
+        // Head and Body Animation State Machine
         if (this.state === 'idle') {
             this.headOffsetY = Math.sin(this.time * 1.2) * 4;
             this.bodyOffsetY = Math.sin(this.time * 1.2) * 2;
@@ -222,16 +246,32 @@ class TalkingTomRenderer {
             // Hand to ear gesture!
             this.headOffsetY = Math.sin(this.time * 2.5) * 3;
             this.headAngle = 0.08;
-            this.rightHandOffset = { x: -35, y: -90 }; // Right hand up to ear
+            this.rightHandOffset = { x: -35, y: -90 };
             this.leftHandOffset = { x: 0, y: 0 };
         } else if (this.state === 'talking') {
             this.headOffsetY = Math.sin(this.time * 3) * 6;
             this.headAngle = Math.sin(this.time * 2) * 0.06;
             this.leftHandOffset = { x: Math.sin(this.time * 2.5) * 10, y: -Math.cos(this.time * 2.5) * 10 };
             this.rightHandOffset = { x: -Math.sin(this.time * 2.5) * 10, y: -Math.sin(this.time * 2.5) * 10 };
+        } else if (this.state === 'slap_left') {
+            // Head snaps sharply right!
+            this.headAngle = -0.42;
+            this.headOffsetY = -15;
+            this.leftHandOffset = { x: -40, y: -30 };
+            this.rightHandOffset = { x: 20, y: 0 };
+        } else if (this.state === 'slap_right') {
+            // Head snaps sharply left!
+            this.headAngle = 0.42;
+            this.headOffsetY = -15;
+            this.leftHandOffset = { x: -20, y: 0 };
+            this.rightHandOffset = { x: 40, y: -30 };
         } else if (this.state === 'dizzy') {
-            this.headAngle = Math.sin(this.time * 8) * 0.18;
-            this.headOffsetY = Math.cos(this.time * 8) * 6;
+            // Heavy knockdown dizzy sway
+            this.headAngle = Math.sin(this.time * 10) * 0.32;
+            this.headOffsetY = Math.cos(this.time * 10) * 12 + 10;
+            this.bodyOffsetY = Math.sin(this.time * 8) * 8;
+            this.leftHandOffset = { x: 20, y: -50 };
+            this.rightHandOffset = { x: -20, y: -50 };
         } else if (this.state === 'belly_poke') {
             this.headOffsetY = Math.sin(this.time * 6) * 8;
             this.bodyOffsetY = Math.sin(this.time * 6) * 5;
@@ -264,6 +304,11 @@ class TalkingTomRenderer {
                 p.y += p.vy;
                 p.radius += 0.4;
                 p.life -= 0.025;
+                if (p.life <= 0) this.particles.splice(i, 1);
+            } else if (p.type === 'impact') {
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life -= 0.05;
                 if (p.life <= 0) this.particles.splice(i, 1);
             }
         }
@@ -300,7 +345,7 @@ class TalkingTomRenderer {
             this.drawMilkBowl(cx, cy - 10);
         }
 
-        // Render Particles (Dizzy Stars, Hearts, Fart Cloud)
+        // Render Particles (Dizzy Stars, Hearts, Fart Cloud, Impact Bursts)
         this.drawParticles(cx, cy - 110 + this.headOffsetY);
 
         this.ctx.restore();
@@ -322,7 +367,7 @@ class TalkingTomRenderer {
 
         this.ctx.lineWidth = 32;
         this.ctx.lineCap = 'round';
-        this.ctx.strokeStyle = '#6e7a85'; // Tom grey fur color
+        this.ctx.strokeStyle = '#6e7a85';
 
         this.ctx.beginPath();
         this.ctx.moveTo(0, 0);
@@ -610,7 +655,7 @@ class TalkingTomRenderer {
         let eyebrowAngleLeft = -0.1;
         let eyebrowAngleRight = 0.1;
 
-        if (this.state === 'dizzy') {
+        if (this.state === 'dizzy' || this.state === 'slap_left' || this.state === 'slap_right') {
             eyebrowAngleLeft = 0.35;
             eyebrowAngleRight = -0.35;
         } else if (this.state === 'belly_poke') {
@@ -636,47 +681,39 @@ class TalkingTomRenderer {
         this.ctx.translate(x, y);
 
         if (this.state === 'talking') {
-            // Dynamic talking mouth synced to audio volume
             const openH = 8 + this.mouthOpen * 38;
             const openW = 20 + this.mouthOpen * 14;
 
-            // Inside mouth cavity
             this.ctx.fillStyle = '#800f2f';
             this.ctx.beginPath();
             this.ctx.ellipse(0, 14, openW, openH, 0, 0, Math.PI * 2);
             this.ctx.fill();
 
-            // Tongue
             this.ctx.fillStyle = '#ff758f';
             this.ctx.beginPath();
             this.ctx.ellipse(0, 14 + openH * 0.4, openW * 0.7, openH * 0.5, 0, 0, Math.PI);
             this.ctx.fill();
 
-            // Upper teeth
             this.ctx.fillStyle = '#ffffff';
             this.ctx.beginPath();
             this.ctx.roundRect(-12, 14 - openH + 2, 24, 7, 3);
             this.ctx.fill();
         } else if (this.state === 'belly_poke' || this.state === 'petting') {
-            // Big Happy Laugh Smile
             this.ctx.fillStyle = '#800f2f';
             this.ctx.beginPath();
             this.ctx.arc(0, 6, 26, 0, Math.PI);
             this.ctx.fill();
 
-            // Pink tongue
             this.ctx.fillStyle = '#ff758f';
             this.ctx.beginPath();
             this.ctx.arc(0, 18, 16, 0, Math.PI);
             this.ctx.fill();
-        } else if (this.state === 'dizzy' || this.state === 'foot_poke') {
-            // Ouch / Wavy mouth
+        } else if (this.state === 'dizzy' || this.state === 'slap_left' || this.state === 'slap_right' || this.state === 'foot_poke') {
             this.ctx.fillStyle = '#800f2f';
             this.ctx.beginPath();
-            this.ctx.ellipse(0, 14, 18, 20, 0, 0, Math.PI * 2);
+            this.ctx.ellipse(0, 14, 22, 18, 0, 0, Math.PI * 2);
             this.ctx.fill();
         } else {
-            // Cute default cat smile line
             this.ctx.strokeStyle = '#334155';
             this.ctx.lineWidth = 3.5;
             this.ctx.lineCap = 'round';
@@ -696,13 +733,11 @@ class TalkingTomRenderer {
     drawMilkBowl(cx, cy) {
         this.ctx.save();
         
-        // Bowl outer
         this.ctx.fillStyle = '#38bdf8';
         this.ctx.beginPath();
         this.ctx.ellipse(cx, cy + 120, 65, 30, 0, 0, Math.PI * 2);
         this.ctx.fill();
 
-        // White Milk liquid inside
         this.ctx.fillStyle = '#ffffff';
         this.ctx.beginPath();
         this.ctx.ellipse(cx, cy + 114, 55, 22, 0, 0, Math.PI * 2);
@@ -732,6 +767,12 @@ class TalkingTomRenderer {
             } else if (p.type === 'fart') {
                 this.ctx.globalAlpha = Math.max(0, p.life * 0.5);
                 this.ctx.fillStyle = '#84cc16';
+                this.ctx.beginPath();
+                this.ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                this.ctx.fill();
+            } else if (p.type === 'impact') {
+                this.ctx.globalAlpha = Math.max(0, p.life);
+                this.ctx.fillStyle = '#ff3366';
                 this.ctx.beginPath();
                 this.ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
                 this.ctx.fill();

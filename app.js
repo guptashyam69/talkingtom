@@ -72,22 +72,29 @@ document.addEventListener('DOMContentLoaded', () => {
     // INTERACTIVE TOUCH / CLICK HIT ZONES
     // ==========================================
 
-    tom.onHitZone = (zone) => {
+    let slapCycle = 0;
+
+    tom.onHitZone = (zone, x, y) => {
         if (audio.isPlayingBack) return; // Don't interrupt while Tom is talking
 
-        if (zone === 'head') {
-            audio.playSlap();
-            audio.playDizzyChimes();
-            tom.setState('dizzy', 2500);
+        if (zone === 'head_left') {
+            audio.playSlapLeft();
+            tom.setState('slap_left', 900, x, y);
+        } else if (zone === 'head_right') {
+            audio.playSlapRight();
+            tom.setState('slap_right', 900, x, y);
+        } else if (zone === 'head_center') {
+            audio.playHeavySlap();
+            tom.setState('dizzy', 2500, x, y);
         } else if (zone === 'belly') {
             audio.playGiggle();
-            tom.setState('belly_poke', 1800);
+            tom.setState('belly_poke', 1800, x, y);
         } else if (zone === 'left_foot' || zone === 'right_foot') {
             audio.playOuch();
-            tom.setState('foot_poke', 1800);
+            tom.setState('foot_poke', 1800, x, y);
         } else if (zone === 'tail') {
             audio.playMeow();
-            tom.setState('dizzy', 1500);
+            tom.setState('slap_right', 1200, x, y);
         }
     };
 
@@ -127,9 +134,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
     slapBtn.addEventListener('click', async () => {
         if (audio.isPlayingBack) return;
-        audio.playSlap();
-        audio.playDizzyChimes();
-        tom.setState('dizzy', 2500);
+        const cx = tom.width / 2;
+        const cy = tom.height * 0.35;
+
+        slapCycle = (slapCycle + 1) % 3;
+        if (slapCycle === 0) {
+            audio.playSlapLeft();
+            tom.setState('slap_left', 900, cx - 40, cy);
+        } else if (slapCycle === 1) {
+            audio.playSlapRight();
+            tom.setState('slap_right', 900, cx + 40, cy);
+        } else {
+            audio.playHeavySlap();
+            tom.setState('dizzy', 2500, cx, cy);
+        }
     });
 
     petBtn.addEventListener('click', async () => {
