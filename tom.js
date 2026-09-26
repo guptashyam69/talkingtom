@@ -1,784 +1,947 @@
 /**
- * Talking Tom Canvas Renderer & Interactive Animation Engine
- * Draws animated vector Tom cat with head, eye tracking, expressions,
- * mouth sync, tail physics, hitboxes, and particle effects.
+ * Talking Tom Canvas Renderer v2
+ * Original cartoon cat character with detailed vector rendering,
+ * gradient fur, expressive eyes, multi-state animations,
+ * lip-sync, hit zones, and particle effects.
  */
 
 class TalkingTomRenderer {
     constructor(canvas) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
-        
-        // Dimensions
         this.width = canvas.width;
         this.height = canvas.height;
 
-        // Pointer target for eye tracking
+        // Pointer for eye tracking
         this.targetX = this.width / 2;
         this.targetY = this.height / 2;
-        
-        // Animation States: 'idle', 'listening', 'recording', 'talking', 'slap_left', 'slap_right', 'dizzy', 'belly_poke', 'foot_poke', 'drinking', 'farting', 'petting'
+
+        // State machine
         this.state = 'idle';
         this.stateTimer = 0;
+        this.prevState = 'idle';
 
-        // Audio mouth opening level (0..1)
+        // Mouth (0..1)
         this.mouthOpen = 0;
+        this.mouthTarget = 0;
 
-        // Blink logic
-        this.blinkProgress = 0; // 0 (open) to 1 (closed)
+        // Blink
+        this.blinkProgress = 0;
         this.nextBlinkTime = Date.now() + 2000 + Math.random() * 3000;
         this.isBlinking = false;
 
-        // Body movement springs / sway
+        // Animation accumulators
         this.time = 0;
         this.tailAngle = 0;
         this.headAngle = 0;
+        this.headOffsetX = 0;
         this.headOffsetY = 0;
         this.bodyOffsetY = 0;
+        this.bodySquash = 1;      // vertical squash/stretch
+        this.earWiggle = 0;
 
-        // Hand positions (relative)
-        this.leftHandOffset = { x: 0, y: 0 };
-        this.rightHandOffset = { x: 0, y: 0 };
+        // Paw offsets
+        this.leftPawOff = { x: 0, y: 0 };
+        this.rightPawOff = { x: 0, y: 0 };
 
-        // Particles (stars, hearts, fart cloud, impact bursts)
+        // Foot lift for reactions
+        this.leftFootLift = 0;
+        this.rightFootLift = 0;
+
+        // Particles
         this.particles = [];
 
-        // Milk prop state
-        this.milkProgress = 0;
+        // Hit callback: (zone, canvasX, canvasY)
+        this.onHitZone = null;
 
-        // Callback for hit detection events
-        this.onHitZone = null; // (zoneName, canvasX, canvasY)
-
-        this.initEvents();
+        this._initEvents();
     }
 
-    resize(width, height) {
-        this.canvas.width = width;
-        this.canvas.height = height;
-        this.width = width;
-        this.height = height;
+    resize(w, h) {
+        this.canvas.width = w;
+        this.canvas.height = h;
+        this.width = w;
+        this.height = h;
     }
 
-    initEvents() {
-        const updatePointer = (e) => {
-            const rect = this.canvas.getBoundingClientRect();
-            this.targetX = (e.clientX - rect.left) * (this.width / rect.width);
-            this.targetY = (e.clientY - rect.top) * (this.height / rect.height);
+    _initEvents() {
+        const ptr = (e) => {
+            const r = this.canvas.getBoundingClientRect();
+            this.targetX = (e.clientX - r.left) * (this.width / r.width);
+            this.targetY = (e.clientY - r.top) * (this.height / r.height);
         };
+        this.canvas.addEventListener('mousemove', ptr);
+        this.canvas.addEventListener('touchmove', (e) => { if (e.touches[0]) ptr(e.touches[0]); }, { passive: true });
 
-        this.canvas.addEventListener('mousemove', updatePointer);
-        this.canvas.addEventListener('touchmove', (e) => {
-            if (e.touches.length > 0) updatePointer(e.touches[0]);
-        });
-
-        const handleClick = (e) => {
-            const rect = this.canvas.getBoundingClientRect();
-            const x = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
-            const y = (e.clientY || (e.touches && e.touches[0].clientY)) - rect.top;
-            
-            const scaleX = this.width / rect.width;
-            const scaleY = this.height / rect.height;
-            const canvasX = x * scaleX;
-            const canvasY = y * scaleY;
-
-            const hitZone = this.checkHitZone(canvasX, canvasY);
-            if (hitZone && this.onHitZone) {
-                this.onHitZone(hitZone, canvasX, canvasY);
-            }
+        const click = (e) => {
+            const r = this.canvas.getBoundingClientRect();
+            const cx = ((e.clientX ?? e.touches?.[0]?.clientX) - r.left) * (this.width / r.width);
+            const cy = ((e.clientY ?? e.touches?.[0]?.clientY) - r.top) * (this.height / r.height);
+            const zone = this._hitTest(cx, cy);
+            if (zone && this.onHitZone) this.onHitZone(zone, cx, cy);
         };
-
-        this.canvas.addEventListener('click', handleClick);
-        this.canvas.addEventListener('touchstart', (e) => {
-            if (e.touches.length > 0) updatePointer(e.touches[0]);
-        }, { passive: true });
+        this.canvas.addEventListener('click', click);
+        this.canvas.addEventListener('touchstart', (e) => { if (e.touches[0]) ptr(e.touches[0]); }, { passive: true });
     }
 
-    checkHitZone(x, y) {
-        // Tom geometry center
-        const cx = this.width / 2;
-        const cy = this.height * 0.52;
+    /* ─── Coordinate helpers ─── */
+    get cx() { return this.width / 2; }
+    get baseY() { return this.height * 0.54; }   // body centre
 
-        // Head hit zone
-        const headDist = Math.hypot(x - cx, y - (cy - 120));
-        if (headDist < 95) {
-            if (x < cx - 25) return 'head_left';
-            if (x > cx + 25) return 'head_right';
-            return 'head_center';
+    _hitTest(x, y) {
+        const cx = this.cx, by = this.baseY;
+        // Head
+        if (Math.hypot(x - cx, y - (by - 145)) < 90) {
+            if (x < cx - 20) return 'head_left';
+            if (x > cx + 20) return 'head_right';
+            return 'head_top';
         }
-
-        // Belly hit zone
-        const bellyDist = Math.hypot(x - cx, y - (cy + 25));
-        if (bellyDist < 75) return 'belly';
-
+        // Belly
+        if (Math.hypot(x - cx, y - (by + 10)) < 70) return 'belly';
         // Left foot
-        const lFootDist = Math.hypot(x - (cx - 60), y - (cy + 180));
-        if (lFootDist < 45) return 'left_foot';
-
+        if (Math.hypot(x - (cx - 52), y - (by + 165)) < 40) return 'left_foot';
         // Right foot
-        const rFootDist = Math.hypot(x - (cx + 60), y - (cy + 180));
-        if (rFootDist < 45) return 'right_foot';
-
+        if (Math.hypot(x - (cx + 52), y - (by + 165)) < 40) return 'right_foot';
         // Tail
-        const tailDist = Math.hypot(x - (cx + 120), y - (cy + 80));
-        if (tailDist < 50) return 'tail';
-
+        if (Math.hypot(x - (cx + 115), y - (by + 50)) < 50) return 'tail';
         return null;
     }
 
-    setState(newState, duration = 0, hitX = null, hitY = null) {
-        this.state = newState;
-        this.stateTimer = duration > 0 ? performance.now() + duration : 0;
+    setState(s, dur = 0, hx = null, hy = null) {
+        this.prevState = this.state;
+        this.state = s;
+        this.stateTimer = dur > 0 ? performance.now() + dur : 0;
 
-        if (newState === 'dizzy') {
-            this.spawnDizzyStars();
-        } else if (newState === 'petting') {
-            this.spawnHearts();
-        } else if (newState === 'farting') {
-            this.spawnFartCloud();
-        }
-
-        if (hitX !== null && hitY !== null) {
-            this.spawnImpactBurst(hitX, hitY);
-        }
+        if (s === 'dizzy')      this._spawnStars();
+        if (s === 'petting')    this._spawnHearts();
+        if (s === 'farting')    this._spawnFartCloud();
+        if (hx !== null)        this._spawnImpact(hx, hy);
     }
 
-    setMouthOpen(level) {
-        this.mouthOpen = Math.min(1, Math.max(0, level));
-    }
+    setMouthOpen(v) { this.mouthTarget = Math.min(1, Math.max(0, v)); }
 
-    spawnImpactBurst(x, y) {
-        for (let i = 0; i < 8; i++) {
-            const angle = (i / 8) * Math.PI * 2;
-            const speed = 4 + Math.random() * 4;
-            this.particles.push({
-                type: 'impact',
-                x: x,
-                y: y,
-                vx: Math.cos(angle) * speed,
-                vy: Math.sin(angle) * speed,
-                radius: 6 + Math.random() * 6,
-                life: 1.0
-            });
-        }
-    }
+    /* ─── Particle spawners ─── */
 
-    spawnDizzyStars() {
-        this.particles = [];
+    _spawnStars() {
         for (let i = 0; i < 5; i++) {
-            this.particles.push({
-                type: 'star',
-                angle: (i / 5) * Math.PI * 2,
-                radius: 65,
-                speed: 0.08,
-                life: 1.0,
-                scale: 12
-            });
+            this.particles.push({ type: 'star', angle: (i / 5) * Math.PI * 2, r: 70, spd: 0.06, life: 1, sz: 10 + Math.random() * 4 });
         }
     }
 
-    spawnHearts() {
-        const cx = this.width / 2;
-        const cy = this.height * 0.45;
-        for (let i = 0; i < 6; i++) {
+    _spawnHearts() {
+        for (let i = 0; i < 7; i++) {
             this.particles.push({
                 type: 'heart',
-                x: cx + (Math.random() * 80 - 40),
-                y: cy + (Math.random() * 40 - 20),
-                vy: -1.5 - Math.random() * 1.5,
+                x: this.cx + (Math.random() - 0.5) * 100,
+                y: this.baseY - 60 + Math.random() * 40,
                 vx: (Math.random() - 0.5) * 1.2,
-                life: 1.0,
-                size: 14 + Math.random() * 10
+                vy: -1.8 - Math.random() * 1.5,
+                life: 1, sz: 12 + Math.random() * 10
             });
         }
     }
 
-    spawnFartCloud() {
-        const cx = this.width / 2 + 70;
-        const cy = this.height * 0.6;
-        for (let i = 0; i < 12; i++) {
+    _spawnFartCloud() {
+        const ox = this.cx + 80, oy = this.baseY + 80;
+        for (let i = 0; i < 14; i++) {
             this.particles.push({
                 type: 'fart',
-                x: cx + (Math.random() * 30 - 15),
-                y: cy + (Math.random() * 30 - 15),
-                vx: 1.5 + Math.random() * 2,
-                vy: (Math.random() - 0.5) * 1.5,
-                radius: 18 + Math.random() * 16,
-                life: 1.0
+                x: ox + (Math.random() - 0.5) * 30,
+                y: oy + (Math.random() - 0.5) * 20,
+                vx: 1.8 + Math.random() * 2,
+                vy: (Math.random() - 0.5) * 1.8,
+                r: 16 + Math.random() * 18,
+                life: 1
             });
         }
     }
 
+    _spawnImpact(x, y) {
+        for (let i = 0; i < 10; i++) {
+            const a = (i / 10) * Math.PI * 2;
+            const sp = 3 + Math.random() * 5;
+            this.particles.push({
+                type: 'impact',
+                x, y,
+                vx: Math.cos(a) * sp,
+                vy: Math.sin(a) * sp,
+                r: 4 + Math.random() * 5,
+                life: 1
+            });
+        }
+    }
+
+    /* ═══════════════════ UPDATE ═══════════════════ */
+
     update() {
-        this.time += 0.05;
+        this.time += 0.045;
         const now = performance.now();
 
-        // Handle auto state timeout return to idle
+        // Auto-return to idle
         if (this.stateTimer > 0 && now > this.stateTimer) {
             this.stateTimer = 0;
             this.state = 'idle';
         }
 
-        // Handle Blinking
-        if (now > this.nextBlinkTime && !this.isBlinking) {
-            this.isBlinking = true;
-            this.blinkProgress = 0;
-        }
+        // Smooth mouth
+        this.mouthOpen += (this.mouthTarget - this.mouthOpen) * 0.3;
+
+        // Blink
+        if (!this.isBlinking && now > this.nextBlinkTime) { this.isBlinking = true; this.blinkProgress = 0; }
         if (this.isBlinking) {
-            this.blinkProgress += 0.2;
-            if (this.blinkProgress >= 1) {
-                this.isBlinking = false;
-                this.blinkProgress = 0;
-                this.nextBlinkTime = now + 2500 + Math.random() * 4000;
-            }
+            this.blinkProgress += 0.18;
+            if (this.blinkProgress >= 1) { this.isBlinking = false; this.blinkProgress = 0; this.nextBlinkTime = now + 2000 + Math.random() * 4000; }
         }
 
-        // Tail Swaying Physics
-        this.tailAngle = Math.sin(this.time * 0.8) * 0.25;
+        // Tail
+        this.tailAngle = Math.sin(this.time * 0.9) * 0.28;
 
-        // Head and Body Animation State Machine
-        if (this.state === 'idle') {
-            this.headOffsetY = Math.sin(this.time * 1.2) * 4;
-            this.bodyOffsetY = Math.sin(this.time * 1.2) * 2;
-            this.headAngle = Math.sin(this.time * 0.6) * 0.03;
-            this.leftHandOffset = { x: 0, y: 0 };
-            this.rightHandOffset = { x: 0, y: 0 };
-        } else if (this.state === 'listening' || this.state === 'recording') {
-            // Hand to ear gesture!
-            this.headOffsetY = Math.sin(this.time * 2.5) * 3;
-            this.headAngle = 0.08;
-            this.rightHandOffset = { x: -35, y: -90 };
-            this.leftHandOffset = { x: 0, y: 0 };
-        } else if (this.state === 'talking') {
-            this.headOffsetY = Math.sin(this.time * 3) * 6;
-            this.headAngle = Math.sin(this.time * 2) * 0.06;
-            this.leftHandOffset = { x: Math.sin(this.time * 2.5) * 10, y: -Math.cos(this.time * 2.5) * 10 };
-            this.rightHandOffset = { x: -Math.sin(this.time * 2.5) * 10, y: -Math.sin(this.time * 2.5) * 10 };
-        } else if (this.state === 'slap_left') {
-            // Head snaps sharply right!
-            this.headAngle = -0.42;
-            this.headOffsetY = -15;
-            this.leftHandOffset = { x: -40, y: -30 };
-            this.rightHandOffset = { x: 20, y: 0 };
-        } else if (this.state === 'slap_right') {
-            // Head snaps sharply left!
-            this.headAngle = 0.42;
-            this.headOffsetY = -15;
-            this.leftHandOffset = { x: -20, y: 0 };
-            this.rightHandOffset = { x: 40, y: -30 };
-        } else if (this.state === 'dizzy') {
-            // Heavy knockdown dizzy sway
-            this.headAngle = Math.sin(this.time * 10) * 0.32;
-            this.headOffsetY = Math.cos(this.time * 10) * 12 + 10;
-            this.bodyOffsetY = Math.sin(this.time * 8) * 8;
-            this.leftHandOffset = { x: 20, y: -50 };
-            this.rightHandOffset = { x: -20, y: -50 };
-        } else if (this.state === 'belly_poke') {
-            this.headOffsetY = Math.sin(this.time * 6) * 8;
-            this.bodyOffsetY = Math.sin(this.time * 6) * 5;
-            this.leftHandOffset = { x: 25, y: -30 };
-            this.rightHandOffset = { x: -25, y: -30 };
-        } else if (this.state === 'foot_poke') {
-            this.headAngle = -0.15;
-            this.headOffsetY = Math.sin(this.time * 10) * 10;
-        } else if (this.state === 'drinking') {
-            this.rightHandOffset = { x: -40, y: -60 };
-            this.leftHandOffset = { x: 40, y: -60 };
-            this.headOffsetY = Math.sin(this.time * 4) * 4;
-        } else if (this.state === 'farting') {
-            this.headAngle = -0.12;
-            this.headOffsetY = 5;
+        // Foot lifts decay
+        this.leftFootLift *= 0.88;
+        this.rightFootLift *= 0.88;
+
+        // State-specific animation
+        const t = this.time;
+        switch (this.state) {
+            case 'idle':
+                this.headAngle = Math.sin(t * 0.5) * 0.025;
+                this.headOffsetX = 0;
+                this.headOffsetY = Math.sin(t * 1.1) * 3;
+                this.bodyOffsetY = Math.sin(t * 1.1) * 1.5;
+                this.bodySquash = 1 + Math.sin(t * 1.1) * 0.015;
+                this.leftPawOff = { x: 0, y: 0 };
+                this.rightPawOff = { x: 0, y: 0 };
+                this.earWiggle = Math.sin(t * 0.7) * 0.04;
+                break;
+
+            case 'listening':
+                this.headAngle = 0.07 + Math.sin(t * 1.8) * 0.02;
+                this.headOffsetX = 8;
+                this.headOffsetY = Math.sin(t * 2.2) * 2.5;
+                this.bodySquash = 1;
+                this.rightPawOff = { x: -30, y: -80 };
+                this.leftPawOff = { x: 0, y: 0 };
+                this.earWiggle = Math.sin(t * 3) * 0.1;
+                break;
+
+            case 'recording':
+                this.headAngle = 0.07 + Math.sin(t * 2.5) * 0.03;
+                this.headOffsetX = 8;
+                this.headOffsetY = Math.sin(t * 3) * 3;
+                this.bodySquash = 1;
+                this.rightPawOff = { x: -32, y: -85 };
+                this.leftPawOff = { x: 0, y: 0 };
+                this.earWiggle = Math.sin(t * 4) * 0.14;
+                break;
+
+            case 'talking':
+                this.headAngle = Math.sin(t * 2.2) * 0.06;
+                this.headOffsetX = Math.sin(t * 1.8) * 4;
+                this.headOffsetY = Math.sin(t * 2.8) * 5;
+                this.bodyOffsetY = Math.sin(t * 2.8) * 2;
+                this.bodySquash = 1 + this.mouthOpen * 0.02;
+                this.leftPawOff = { x: Math.sin(t * 2.5) * 8, y: -Math.cos(t * 2.5) * 8 };
+                this.rightPawOff = { x: -Math.sin(t * 2.5) * 8, y: Math.sin(t * 2.5) * 8 };
+                this.earWiggle = Math.sin(t * 3) * 0.05;
+                break;
+
+            case 'slap_left':
+                this.headAngle = -0.45;
+                this.headOffsetX = 30;
+                this.headOffsetY = -10;
+                this.bodySquash = 0.96;
+                this.leftPawOff = { x: -35, y: -25 };
+                this.rightPawOff = { x: 15, y: 0 };
+                break;
+
+            case 'slap_right':
+                this.headAngle = 0.45;
+                this.headOffsetX = -30;
+                this.headOffsetY = -10;
+                this.bodySquash = 0.96;
+                this.leftPawOff = { x: -15, y: 0 };
+                this.rightPawOff = { x: 35, y: -25 };
+                break;
+
+            case 'dizzy':
+                this.headAngle = Math.sin(t * 9) * 0.35;
+                this.headOffsetX = Math.cos(t * 7) * 15;
+                this.headOffsetY = Math.sin(t * 9) * 12 + 8;
+                this.bodyOffsetY = Math.sin(t * 7) * 6;
+                this.bodySquash = 1 + Math.sin(t * 10) * 0.03;
+                this.leftPawOff = { x: 20, y: -45 };
+                this.rightPawOff = { x: -20, y: -45 };
+                this.earWiggle = Math.sin(t * 12) * 0.2;
+                break;
+
+            case 'belly_poke':
+                this.headOffsetY = Math.sin(t * 7) * 10;
+                this.bodyOffsetY = Math.sin(t * 7) * 6;
+                this.bodySquash = 1 + Math.sin(t * 7) * 0.04;
+                this.headAngle = Math.sin(t * 5) * 0.04;
+                this.leftPawOff = { x: 25, y: -30 };
+                this.rightPawOff = { x: -25, y: -30 };
+                break;
+
+            case 'foot_poke':
+                this.headAngle = -0.12;
+                this.headOffsetY = Math.sin(t * 12) * 12;
+                this.bodySquash = 1;
+                this.leftFootLift = 30;
+                break;
+
+            case 'drinking':
+                this.headAngle = 0.12;
+                this.headOffsetY = 15 + Math.sin(t * 4) * 3;
+                this.bodySquash = 1;
+                this.leftPawOff = { x: 35, y: -55 };
+                this.rightPawOff = { x: -35, y: -55 };
+                break;
+
+            case 'farting':
+                this.headAngle = -0.1;
+                this.headOffsetY = 4;
+                this.bodySquash = 0.97;
+                this.leftPawOff = { x: 0, y: -10 };
+                this.rightPawOff = { x: 0, y: -10 };
+                break;
+
+            case 'petting':
+                this.headAngle = Math.sin(t * 0.8) * 0.04;
+                this.headOffsetY = Math.sin(t * 1) * 2;
+                this.bodySquash = 1 + Math.sin(t * 1.2) * 0.01;
+                this.earWiggle = 0.12;
+                break;
+
+            case 'tail_pull':
+                this.headAngle = 0.2;
+                this.headOffsetX = 15;
+                this.headOffsetY = -8;
+                this.bodySquash = 1;
+                this.tailAngle = -0.7 + Math.sin(t * 12) * 0.15;
+                break;
         }
 
-        // Update Particles
+        // Update particles
         for (let i = this.particles.length - 1; i >= 0; i--) {
             const p = this.particles[i];
-            if (p.type === 'star') {
-                p.angle += p.speed;
-            } else if (p.type === 'heart') {
-                p.x += p.vx;
-                p.y += p.vy;
-                p.life -= 0.02;
-                if (p.life <= 0) this.particles.splice(i, 1);
-            } else if (p.type === 'fart') {
-                p.x += p.vx;
-                p.y += p.vy;
-                p.radius += 0.4;
-                p.life -= 0.025;
-                if (p.life <= 0) this.particles.splice(i, 1);
-            } else if (p.type === 'impact') {
-                p.x += p.vx;
-                p.y += p.vy;
-                p.life -= 0.05;
-                if (p.life <= 0) this.particles.splice(i, 1);
+            switch (p.type) {
+                case 'star':   p.angle += p.spd; p.life -= 0.005; break;
+                case 'heart':  p.x += p.vx; p.y += p.vy; p.vy += 0.02; p.life -= 0.018; break;
+                case 'fart':   p.x += p.vx; p.y += p.vy; p.r += 0.5; p.life -= 0.022; break;
+                case 'impact': p.x += p.vx; p.y += p.vy; p.vx *= 0.92; p.vy *= 0.92; p.life -= 0.06; break;
             }
+            if (p.life <= 0) this.particles.splice(i, 1);
         }
     }
+
+    /* ═══════════════════ DRAW ═══════════════════ */
 
     draw() {
-        this.ctx.clearRect(0, 0, this.width, this.height);
+        const c = this.ctx;
+        c.clearRect(0, 0, this.width, this.height);
+        const cx = this.cx, by = this.baseY;
 
-        const cx = this.width / 2;
-        const cy = this.height * 0.52;
+        c.save();
 
-        this.ctx.save();
-        
-        // Shadow on ground
-        this.drawShadow(cx, cy + 200);
+        // Ground shadow
+        this._drawShadow(cx, by + 195);
 
-        // Tail behind body
-        this.drawTail(cx, cy + 60);
+        // Tail (behind body)
+        this._drawTail(cx + 45, by + 50);
 
-        // Legs and Feet
-        this.drawLegs(cx, cy + 120);
+        // Legs
+        this._drawLegs(cx, by + 105);
 
-        // Main Body & Belly
-        this.drawBody(cx, cy + this.bodyOffsetY);
+        // Body
+        c.save();
+        c.translate(cx, by + this.bodyOffsetY);
+        c.scale(1, this.bodySquash);
+        c.translate(-cx, -(by + this.bodyOffsetY));
+        this._drawBody(cx, by + this.bodyOffsetY);
+        c.restore();
 
-        // Arms and Hands
-        this.drawArms(cx, cy + this.bodyOffsetY);
+        // Arms
+        this._drawArms(cx, by + this.bodyOffsetY);
 
-        // Head and Face
-        this.drawHead(cx, cy - 110 + this.headOffsetY);
+        // Head
+        this._drawHead(cx + this.headOffsetX, by - 135 + this.headOffsetY);
 
-        // Special Props (Milk Bowl)
-        if (this.state === 'drinking') {
-            this.drawMilkBowl(cx, cy - 10);
-        }
+        // Props
+        if (this.state === 'drinking') this._drawMilkBowl(cx, by + 100);
 
-        // Render Particles (Dizzy Stars, Hearts, Fart Cloud, Impact Bursts)
-        this.drawParticles(cx, cy - 110 + this.headOffsetY);
+        // Particles
+        this._drawParticles(cx + this.headOffsetX, by - 135 + this.headOffsetY);
 
-        this.ctx.restore();
+        c.restore();
     }
 
-    drawShadow(cx, cy) {
-        this.ctx.save();
-        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
-        this.ctx.beginPath();
-        this.ctx.ellipse(cx, cy, 110, 24, 0, 0, Math.PI * 2);
-        this.ctx.fill();
-        this.ctx.restore();
+    /* ─── Shadow ─── */
+    _drawShadow(cx, y) {
+        const c = this.ctx;
+        c.save();
+        c.fillStyle = 'rgba(0,0,0,0.18)';
+        c.beginPath();
+        c.ellipse(cx, y, 105, 20, 0, 0, Math.PI * 2);
+        c.fill();
+        c.restore();
     }
 
-    drawTail(cx, cy) {
-        this.ctx.save();
-        this.ctx.translate(cx + 40, cy);
-        this.ctx.rotate(this.tailAngle);
+    /* ─── Tail ─── */
+    _drawTail(x, y) {
+        const c = this.ctx;
+        c.save();
+        c.translate(x, y);
+        c.rotate(this.tailAngle);
 
-        this.ctx.lineWidth = 32;
-        this.ctx.lineCap = 'round';
-        this.ctx.strokeStyle = '#6e7a85';
+        // Grey shaft
+        c.lineWidth = 28;
+        c.lineCap = 'round';
+        c.strokeStyle = '#7a8694';
+        c.beginPath();
+        c.moveTo(0, 0);
+        c.bezierCurveTo(30, 25, 70, 10, 100, -50);
+        c.stroke();
 
-        this.ctx.beginPath();
-        this.ctx.moveTo(0, 0);
-        this.ctx.quadraticCurveTo(60, 20, 95, -40);
-        this.ctx.stroke();
+        // White tip
+        c.lineWidth = 24;
+        c.strokeStyle = '#eef1f5';
+        c.beginPath();
+        c.moveTo(75, -20);
+        c.bezierCurveTo(85, -35, 95, -48, 100, -50);
+        c.stroke();
 
-        // White tail tip
-        this.ctx.lineWidth = 30;
-        this.ctx.strokeStyle = '#f4f5f7';
-        this.ctx.beginPath();
-        this.ctx.moveTo(70, 0);
-        this.ctx.quadraticCurveTo(85, -20, 95, -40);
-        this.ctx.stroke();
-
-        this.ctx.restore();
+        c.restore();
     }
 
-    drawLegs(cx, cy) {
-        this.ctx.save();
+    /* ─── Legs & Feet ─── */
+    _drawLegs(cx, topY) {
+        const c = this.ctx;
+        c.save();
 
-        // Left Leg
-        this.ctx.fillStyle = '#6e7a85';
-        this.ctx.beginPath();
-        this.ctx.roundRect(cx - 85, cy - 40, 50, 90, 25);
-        this.ctx.fill();
+        // Left leg
+        const llg = c.createLinearGradient(cx - 80, topY, cx - 80, topY + 80);
+        llg.addColorStop(0, '#6e7a85');
+        llg.addColorStop(1, '#7a8694');
+        c.fillStyle = llg;
+        c.beginPath();
+        c.roundRect(cx - 82, topY - 15, 48, 80, 24);
+        c.fill();
 
-        // Right Leg
-        this.ctx.beginPath();
-        this.ctx.roundRect(cx + 35, cy - 40, 50, 90, 25);
-        this.ctx.fill();
+        // Right leg
+        const rlg = c.createLinearGradient(cx + 34, topY, cx + 34, topY + 80);
+        rlg.addColorStop(0, '#6e7a85');
+        rlg.addColorStop(1, '#7a8694');
+        c.fillStyle = rlg;
+        c.beginPath();
+        c.roundRect(cx + 34, topY - 15, 48, 80, 24);
+        c.fill();
 
-        // Foot - Left
-        const lYOffset = (this.state === 'foot_poke') ? -25 : 0;
-        this.drawFoot(cx - 60, cy + 60 + lYOffset);
+        // Left foot
+        this._drawFoot(cx - 58, topY + 65 - this.leftFootLift);
+        // Right foot
+        this._drawFoot(cx + 58, topY + 65 - this.rightFootLift);
 
-        // Foot - Right
-        this.drawFoot(cx + 60, cy + 60);
-
-        this.ctx.restore();
+        c.restore();
     }
 
-    drawFoot(x, y) {
-        this.ctx.save();
-        // Base foot oval
-        this.ctx.fillStyle = '#f4f5f7';
-        this.ctx.beginPath();
-        this.ctx.ellipse(x, y, 32, 20, 0, 0, Math.PI * 2);
-        this.ctx.fill();
+    _drawFoot(x, y) {
+        const c = this.ctx;
+        c.save();
 
-        // Pink foot pads
-        this.ctx.fillStyle = '#ffb0c4';
-        this.ctx.beginPath();
-        this.ctx.ellipse(x, y + 2, 14, 10, 0, 0, Math.PI * 2);
-        this.ctx.fill();
+        // Foot oval
+        c.fillStyle = '#eef1f5';
+        c.beginPath();
+        c.ellipse(x, y, 34, 18, 0, 0, Math.PI * 2);
+        c.fill();
 
-        // Toe pads
+        // Main pad
+        c.fillStyle = '#f9a8c9';
+        c.beginPath();
+        c.ellipse(x, y + 2, 16, 10, 0, 0, Math.PI * 2);
+        c.fill();
+
+        // Toe beans
+        c.fillStyle = '#f9a8c9';
         for (let i = -1; i <= 1; i++) {
-            this.ctx.beginPath();
-            this.ctx.arc(x + i * 14, y - 10, 5, 0, Math.PI * 2);
-            this.ctx.fill();
+            c.beginPath();
+            c.arc(x + i * 14, y - 8, 5.5, 0, Math.PI * 2);
+            c.fill();
         }
 
-        this.ctx.restore();
+        c.restore();
     }
 
-    drawBody(cx, cy) {
-        this.ctx.save();
+    /* ─── Body ─── */
+    _drawBody(cx, cy) {
+        const c = this.ctx;
+        c.save();
 
-        // Outer Body Fur
-        this.ctx.fillStyle = '#6e7a85';
-        this.ctx.beginPath();
-        this.ctx.ellipse(cx, cy, 80, 110, 0, 0, Math.PI * 2);
-        this.ctx.fill();
+        // Fur gradient
+        const bg = c.createRadialGradient(cx, cy - 20, 10, cx, cy, 120);
+        bg.addColorStop(0, '#8a95a2');
+        bg.addColorStop(0.5, '#727e8a');
+        bg.addColorStop(1, '#5e6a76');
+        c.fillStyle = bg;
+        c.beginPath();
+        c.ellipse(cx, cy, 82, 108, 0, 0, Math.PI * 2);
+        c.fill();
 
-        // Light Grey / White Belly Patch
-        this.ctx.fillStyle = '#e4e7eb';
-        this.ctx.beginPath();
-        this.ctx.ellipse(cx, cy + 10, 54, 80, 0, 0, Math.PI * 2);
-        this.ctx.fill();
+        // Belly patch — lighter grey
+        const wg = c.createRadialGradient(cx, cy + 8, 5, cx, cy + 15, 70);
+        wg.addColorStop(0, '#ffffff');
+        wg.addColorStop(0.6, '#f0f2f5');
+        wg.addColorStop(1, '#d8dce2');
+        c.fillStyle = wg;
+        c.beginPath();
+        c.ellipse(cx, cy + 12, 52, 76, 0, 0, Math.PI * 2);
+        c.fill();
 
-        // Belly Fur Highlights
-        this.ctx.fillStyle = '#ffffff';
-        this.ctx.beginPath();
-        this.ctx.ellipse(cx, cy + 15, 38, 60, 0, 0, Math.PI * 2);
-        this.ctx.fill();
-
-        this.ctx.restore();
+        c.restore();
     }
 
-    drawArms(cx, cy) {
-        this.ctx.save();
+    /* ─── Arms ─── */
+    _drawArms(cx, cy) {
+        const c = this.ctx;
+        c.save();
 
-        // Left Arm
-        const lX = cx - 75 + this.leftHandOffset.x;
-        const lY = cy - 20 + this.leftHandOffset.y;
-        this.ctx.fillStyle = '#6e7a85';
-        this.ctx.beginPath();
-        this.ctx.ellipse(lX, lY, 22, 50, 0.3, 0, Math.PI * 2);
-        this.ctx.fill();
+        // Left arm
+        const lx = cx - 76 + this.leftPawOff.x;
+        const ly = cy - 18 + this.leftPawOff.y;
 
-        // Left Paw
-        this.ctx.fillStyle = '#f4f5f7';
-        this.ctx.beginPath();
-        this.ctx.arc(lX - 8, lY + 35, 18, 0, Math.PI * 2);
-        this.ctx.fill();
+        const lag = c.createLinearGradient(lx - 20, ly - 40, lx + 20, ly + 40);
+        lag.addColorStop(0, '#7a8694');
+        lag.addColorStop(1, '#6e7a85');
+        c.fillStyle = lag;
+        c.beginPath();
+        c.ellipse(lx, ly, 20, 48, 0.3, 0, Math.PI * 2);
+        c.fill();
 
-        // Right Arm
-        const rX = cx + 75 + this.rightHandOffset.x;
-        const rY = cy - 20 + this.rightHandOffset.y;
-        this.ctx.fillStyle = '#6e7a85';
-        this.ctx.beginPath();
-        this.ctx.ellipse(rX, rY, 22, 50, -0.3, 0, Math.PI * 2);
-        this.ctx.fill();
+        // Left paw
+        c.fillStyle = '#eef1f5';
+        c.beginPath();
+        c.arc(lx - 6, ly + 38, 16, 0, Math.PI * 2);
+        c.fill();
+        // Paw pad
+        c.fillStyle = '#f9a8c9';
+        c.beginPath();
+        c.ellipse(lx - 6, ly + 40, 8, 6, 0, 0, Math.PI * 2);
+        c.fill();
 
-        // Right Paw
-        this.ctx.fillStyle = '#f4f5f7';
-        this.ctx.beginPath();
-        this.ctx.arc(rX + 8, rY + 35, 18, 0, Math.PI * 2);
-        this.ctx.fill();
+        // Right arm
+        const rx = cx + 76 + this.rightPawOff.x;
+        const ry = cy - 18 + this.rightPawOff.y;
 
-        this.ctx.restore();
+        const rag = c.createLinearGradient(rx - 20, ry - 40, rx + 20, ry + 40);
+        rag.addColorStop(0, '#7a8694');
+        rag.addColorStop(1, '#6e7a85');
+        c.fillStyle = rag;
+        c.beginPath();
+        c.ellipse(rx, ry, 20, 48, -0.3, 0, Math.PI * 2);
+        c.fill();
+
+        // Right paw
+        c.fillStyle = '#eef1f5';
+        c.beginPath();
+        c.arc(rx + 6, ry + 38, 16, 0, Math.PI * 2);
+        c.fill();
+        c.fillStyle = '#f9a8c9';
+        c.beginPath();
+        c.ellipse(rx + 6, ry + 40, 8, 6, 0, 0, Math.PI * 2);
+        c.fill();
+
+        c.restore();
     }
 
-    drawHead(cx, cy) {
-        this.ctx.save();
-        this.ctx.translate(cx, cy);
-        this.ctx.rotate(this.headAngle);
+    /* ─── Head ─── */
+    _drawHead(cx, cy) {
+        const c = this.ctx;
+        c.save();
+        c.translate(cx, cy);
+        c.rotate(this.headAngle);
 
-        // EARS
-        // Left Ear
-        this.ctx.fillStyle = '#6e7a85';
-        this.ctx.beginPath();
-        this.ctx.moveTo(-75, -50);
-        this.ctx.lineTo(-115, -135);
-        this.ctx.lineTo(-25, -95);
-        this.ctx.closePath();
-        this.ctx.fill();
+        // ── Ears ──
+        this._drawEar(c, -1);   // left ear
+        this._drawEar(c, 1);    // right ear
 
-        // Left Inner Ear (Pink)
-        this.ctx.fillStyle = '#ffb0c4';
-        this.ctx.beginPath();
-        this.ctx.moveTo(-70, -60);
-        this.ctx.lineTo(-105, -125);
-        this.ctx.lineTo(-35, -92);
-        this.ctx.closePath();
-        this.ctx.fill();
+        // ── Head shape ──
+        const hg = c.createRadialGradient(0, -5, 10, 0, 5, 100);
+        hg.addColorStop(0, '#8a95a2');
+        hg.addColorStop(0.6, '#727e8a');
+        hg.addColorStop(1, '#5e6a76');
+        c.fillStyle = hg;
+        c.beginPath();
+        c.ellipse(0, 0, 92, 80, 0, 0, Math.PI * 2);
+        c.fill();
 
-        // Right Ear
-        this.ctx.fillStyle = '#6e7a85';
-        this.ctx.beginPath();
-        this.ctx.moveTo(75, -50);
-        this.ctx.lineTo(115, -135);
-        this.ctx.lineTo(25, -95);
-        this.ctx.closePath();
-        this.ctx.fill();
+        // Cheek fluffs
+        c.fillStyle = '#7a8694';
+        c.beginPath(); c.arc(-82, 22, 22, 0, Math.PI * 2); c.fill();
+        c.beginPath(); c.arc(82, 22, 22, 0, Math.PI * 2); c.fill();
 
-        // Right Inner Ear (Pink)
-        this.ctx.fillStyle = '#ffb0c4';
-        this.ctx.beginPath();
-        this.ctx.moveTo(70, -60);
-        this.ctx.lineTo(105, -125);
-        this.ctx.lineTo(35, -92);
-        this.ctx.closePath();
-        this.ctx.fill();
+        // ── White muzzle ──
+        const mg = c.createRadialGradient(0, 30, 5, 0, 28, 45);
+        mg.addColorStop(0, '#ffffff');
+        mg.addColorStop(1, '#eff1f4');
+        c.fillStyle = mg;
+        c.beginPath();
+        c.ellipse(-20, 26, 28, 22, -0.12, 0, Math.PI * 2);
+        c.ellipse(20, 26, 28, 22, 0.12, 0, Math.PI * 2);
+        c.fill();
 
-        // HEAD MAIN BASE
-        this.ctx.fillStyle = '#6e7a85';
-        this.ctx.beginPath();
-        this.ctx.ellipse(0, 0, 95, 82, 0, 0, Math.PI * 2);
-        this.ctx.fill();
+        // ── Nose ──
+        c.fillStyle = '#ff7093';
+        c.beginPath();
+        c.moveTo(0, 8);
+        c.bezierCurveTo(-14, 2, -14, 18, 0, 22);
+        c.bezierCurveTo(14, 18, 14, 2, 0, 8);
+        c.fill();
+        // Nose highlight
+        c.fillStyle = 'rgba(255,255,255,0.35)';
+        c.beginPath();
+        c.ellipse(-3, 10, 4, 3, -0.3, 0, Math.PI * 2);
+        c.fill();
 
-        // Cheek Fur Fluffs
-        this.ctx.beginPath();
-        this.ctx.arc(-85, 20, 25, 0, Math.PI * 2);
-        this.ctx.arc(85, 20, 25, 0, Math.PI * 2);
-        this.ctx.fill();
+        // ── Mouth ──
+        this._drawMouth(c, 0, 28);
 
-        // WHITE SNOUT & MUZZLE
-        this.ctx.fillStyle = '#f4f5f7';
-        this.ctx.beginPath();
-        this.ctx.ellipse(-24, 25, 30, 24, -0.15, 0, Math.PI * 2);
-        this.ctx.ellipse(24, 25, 30, 24, 0.15, 0, Math.PI * 2);
-        this.ctx.fill();
+        // ── Whiskers ──
+        this._drawWhiskers(c);
 
-        // PINK NOSE
-        this.ctx.fillStyle = '#ff7b9c';
-        this.ctx.beginPath();
-        this.ctx.moveTo(0, 6);
-        this.ctx.quadraticCurveTo(-14, 0, -14, 12);
-        this.ctx.quadraticCurveTo(0, 24, 14, 12);
-        this.ctx.quadraticCurveTo(14, 0, 0, 6);
-        this.ctx.fill();
+        // ── Eyes ──
+        this._drawEyes(c, cx, cy);
 
-        // MOUTHS & EXPRESSIONS
-        this.drawMouth(0, 25);
-
-        // WHISKERS
-        this.drawWhiskers();
-
-        // EYES & EYEBROWS
-        this.drawEyes(cx, cy);
-
-        this.ctx.restore();
+        c.restore();
     }
 
-    drawWhiskers() {
-        this.ctx.strokeStyle = '#4a525a';
-        this.ctx.lineWidth = 2.5;
+    _drawEar(c, side) {
+        const sx = side;
+        const ew = this.earWiggle * side;
 
-        // Left Whiskers
-        for (let i = -1; i <= 1; i++) {
-            this.ctx.beginPath();
-            this.ctx.moveTo(-45, 24 + i * 6);
-            this.ctx.lineTo(-115, 14 + i * 22);
-            this.ctx.stroke();
-        }
+        c.save();
+        c.translate(sx * 62, -55);
+        c.rotate(ew);
 
-        // Right Whiskers
-        for (let i = -1; i <= 1; i++) {
-            this.ctx.beginPath();
-            this.ctx.moveTo(45, 24 + i * 6);
-            this.ctx.lineTo(115, 14 + i * 22);
-            this.ctx.stroke();
-        }
+        // Outer ear
+        c.fillStyle = '#6e7a85';
+        c.beginPath();
+        c.moveTo(-sx * 15, 15);
+        c.lineTo(sx * 5, -85);
+        c.lineTo(sx * 50, 10);
+        c.closePath();
+        c.fill();
+
+        // Inner ear (pink)
+        const ig = c.createLinearGradient(0, -60, 0, 10);
+        ig.addColorStop(0, '#ffb8d0');
+        ig.addColorStop(1, '#ff8aaf');
+        c.fillStyle = ig;
+        c.beginPath();
+        c.moveTo(-sx * 7, 8);
+        c.lineTo(sx * 8, -72);
+        c.lineTo(sx * 40, 5);
+        c.closePath();
+        c.fill();
+
+        c.restore();
     }
 
-    drawEyes(headAbsoluteX, headAbsoluteY) {
-        this.ctx.save();
+    _drawWhiskers(c) {
+        c.strokeStyle = 'rgba(60,70,80,0.55)';
+        c.lineWidth = 2.2;
+        c.lineCap = 'round';
 
-        const eyeOffsetX = 40;
-        const eyeOffsetY = -24;
-        const eyeRadiusX = 26;
-        const eyeRadiusY = 32;
-
-        // Eye tracking math
-        const dx = this.targetX - headAbsoluteX;
-        const dy = this.targetY - headAbsoluteY;
-        const dist = Math.hypot(dx, dy) || 1;
-        const maxPupilOffset = 9;
-        const pupilDx = (dx / dist) * Math.min(dist * 0.05, maxPupilOffset);
-        const pupilDy = (dy / dist) * Math.min(dist * 0.05, maxPupilOffset);
-
-        const eyes = [-eyeOffsetX, eyeOffsetX];
-
-        eyes.forEach(ex => {
-            // White Sclera
-            this.ctx.fillStyle = '#ffffff';
-            this.ctx.beginPath();
-            this.ctx.ellipse(ex, eyeOffsetY, eyeRadiusX, eyeRadiusY, 0, 0, Math.PI * 2);
-            this.ctx.fill();
-
-            // Vibrant Green Iris
-            this.ctx.fillStyle = '#3ac65d';
-            this.ctx.beginPath();
-            this.ctx.ellipse(ex + pupilDx, eyeOffsetY + pupilDy, 16, 20, 0, 0, Math.PI * 2);
-            this.ctx.fill();
-
-            // Black Pupil
-            this.ctx.fillStyle = '#0f172a';
-            this.ctx.beginPath();
-            this.ctx.ellipse(ex + pupilDx, eyeOffsetY + pupilDy, 9, 14, 0, 0, Math.PI * 2);
-            this.ctx.fill();
-
-            // Glint / Catchlight
-            this.ctx.fillStyle = '#ffffff';
-            this.ctx.beginPath();
-            this.ctx.arc(ex + pupilDx - 5, eyeOffsetY + pupilDy - 5, 4, 0, Math.PI * 2);
-            this.ctx.fill();
-
-            // Eyelids / Blinking / Expressions
-            if (this.isBlinking || this.state === 'petting') {
-                const closeAmount = this.state === 'petting' ? 0.9 : Math.sin(this.blinkProgress * Math.PI);
-                this.ctx.fillStyle = '#6e7a85';
-                this.ctx.beginPath();
-                this.ctx.rect(ex - eyeRadiusX - 2, eyeOffsetY - eyeRadiusY - 2, eyeRadiusX * 2 + 4, (eyeRadiusY * 2 + 4) * closeAmount);
-                this.ctx.fill();
+        for (let side = -1; side <= 1; side += 2) {
+            for (let i = -1; i <= 1; i++) {
+                c.beginPath();
+                c.moveTo(side * 42, 26 + i * 7);
+                c.lineTo(side * 118, 18 + i * 20);
+                c.stroke();
             }
-        });
+        }
+    }
+
+    _drawEyes(c, headAbsX, headAbsY) {
+        c.save();
+
+        const ex = 38, ey = -22;
+        const erx = 24, ery = 30;
+
+        // Eye tracking
+        const dx = this.targetX - headAbsX;
+        const dy = this.targetY - headAbsY;
+        const dist = Math.hypot(dx, dy) || 1;
+        const maxOff = 8;
+        const px = (dx / dist) * Math.min(dist * 0.04, maxOff);
+        const py = (dy / dist) * Math.min(dist * 0.04, maxOff);
+
+        for (const side of [-1, 1]) {
+            const x = side * ex;
+
+            // Sclera (white)
+            c.fillStyle = '#ffffff';
+            c.beginPath();
+            c.ellipse(x, ey, erx, ery, 0, 0, Math.PI * 2);
+            c.fill();
+
+            // Sclera shadow
+            const sg = c.createLinearGradient(x, ey - ery, x, ey + ery);
+            sg.addColorStop(0, 'rgba(0,0,0,0.06)');
+            sg.addColorStop(0.3, 'rgba(0,0,0,0)');
+            sg.addColorStop(1, 'rgba(0,0,0,0)');
+            c.fillStyle = sg;
+            c.beginPath();
+            c.ellipse(x, ey, erx, ery, 0, 0, Math.PI * 2);
+            c.fill();
+
+            // Iris
+            const ig = c.createRadialGradient(x + px, ey + py - 3, 2, x + px, ey + py, 18);
+            ig.addColorStop(0, '#42d872');
+            ig.addColorStop(0.5, '#2cb85a');
+            ig.addColorStop(1, '#1a8a40');
+            c.fillStyle = ig;
+            c.beginPath();
+            c.ellipse(x + px, ey + py, 15, 18, 0, 0, Math.PI * 2);
+            c.fill();
+
+            // Pupil
+            c.fillStyle = '#0d1520';
+            c.beginPath();
+            c.ellipse(x + px, ey + py, 8, 13, 0, 0, Math.PI * 2);
+            c.fill();
+
+            // Large highlight
+            c.fillStyle = 'rgba(255,255,255,0.85)';
+            c.beginPath();
+            c.arc(x + px - 5, ey + py - 6, 4.5, 0, Math.PI * 2);
+            c.fill();
+
+            // Small highlight
+            c.fillStyle = 'rgba(255,255,255,0.55)';
+            c.beginPath();
+            c.arc(x + px + 4, ey + py + 4, 2, 0, Math.PI * 2);
+            c.fill();
+
+            // Blink / eyelid
+            const blinkAmt = this.state === 'petting' ? 0.88
+                : this.isBlinking ? Math.sin(this.blinkProgress * Math.PI) : 0;
+            if (blinkAmt > 0) {
+                c.fillStyle = '#6e7a85';
+                c.beginPath();
+                c.ellipse(x, ey, erx + 2, (ery + 2) * blinkAmt, 0, Math.PI, Math.PI * 2);
+                c.rect(x - erx - 2, ey - ery - 2, (erx + 2) * 2, (ery + 2) * blinkAmt);
+                c.fill();
+            }
+        }
 
         // Eyebrows
-        this.ctx.strokeStyle = '#4a525a';
-        this.ctx.lineWidth = 4.5;
-        this.ctx.lineCap = 'round';
+        c.strokeStyle = '#4a535e';
+        c.lineWidth = 4;
+        c.lineCap = 'round';
 
-        let eyebrowAngleLeft = -0.1;
-        let eyebrowAngleRight = 0.1;
-
+        let lba = -0.08, rba = 0.08;
         if (this.state === 'dizzy' || this.state === 'slap_left' || this.state === 'slap_right') {
-            eyebrowAngleLeft = 0.35;
-            eyebrowAngleRight = -0.35;
-        } else if (this.state === 'belly_poke') {
-            eyebrowAngleLeft = -0.25;
-            eyebrowAngleRight = 0.25;
+            lba = 0.35; rba = -0.35;
+        } else if (this.state === 'belly_poke' || this.state === 'foot_poke') {
+            lba = -0.3; rba = 0.3;
+        } else if (this.state === 'petting') {
+            lba = -0.15; rba = 0.15;
         }
 
-        // Left Eyebrow
-        this.ctx.beginPath();
-        this.ctx.arc(-eyeOffsetX, eyeOffsetY - 36, 22, Math.PI + 0.3 + eyebrowAngleLeft, Math.PI * 2 - 0.3 + eyebrowAngleLeft);
-        this.ctx.stroke();
+        // Left brow
+        c.beginPath();
+        c.arc(-ex, ey - 35, 20, Math.PI + 0.3 + lba, Math.PI * 2 - 0.3 + lba);
+        c.stroke();
+        // Right brow
+        c.beginPath();
+        c.arc(ex, ey - 35, 20, Math.PI + 0.3 + rba, Math.PI * 2 - 0.3 + rba);
+        c.stroke();
 
-        // Right Eyebrow
-        this.ctx.beginPath();
-        this.ctx.arc(eyeOffsetX, eyeOffsetY - 36, 22, Math.PI + 0.3 + eyebrowAngleRight, Math.PI * 2 - 0.3 + eyebrowAngleRight);
-        this.ctx.stroke();
-
-        this.ctx.restore();
+        c.restore();
     }
 
-    drawMouth(x, y) {
-        this.ctx.save();
-        this.ctx.translate(x, y);
+    _drawMouth(c, x, y) {
+        c.save();
+        c.translate(x, y);
 
         if (this.state === 'talking') {
-            const openH = 8 + this.mouthOpen * 38;
-            const openW = 20 + this.mouthOpen * 14;
+            // Talking mouth synced to volume
+            const oh = 6 + this.mouthOpen * 32;
+            const ow = 18 + this.mouthOpen * 12;
 
-            this.ctx.fillStyle = '#800f2f';
-            this.ctx.beginPath();
-            this.ctx.ellipse(0, 14, openW, openH, 0, 0, Math.PI * 2);
-            this.ctx.fill();
+            // Mouth cavity
+            const cg = c.createRadialGradient(0, 12, 2, 0, 12, oh);
+            cg.addColorStop(0, '#5c0020');
+            cg.addColorStop(1, '#8a0e35');
+            c.fillStyle = cg;
+            c.beginPath();
+            c.ellipse(0, 12, ow, oh, 0, 0, Math.PI * 2);
+            c.fill();
 
-            this.ctx.fillStyle = '#ff758f';
-            this.ctx.beginPath();
-            this.ctx.ellipse(0, 14 + openH * 0.4, openW * 0.7, openH * 0.5, 0, 0, Math.PI);
-            this.ctx.fill();
+            // Tongue
+            c.fillStyle = '#ff758f';
+            c.beginPath();
+            c.ellipse(0, 12 + oh * 0.35, ow * 0.65, oh * 0.45, 0, 0, Math.PI);
+            c.fill();
 
-            this.ctx.fillStyle = '#ffffff';
-            this.ctx.beginPath();
-            this.ctx.roundRect(-12, 14 - openH + 2, 24, 7, 3);
-            this.ctx.fill();
+            // Teeth
+            if (oh > 10) {
+                c.fillStyle = '#fff';
+                c.beginPath();
+                c.roundRect(-10, 12 - oh + 1, 20, 5, 2);
+                c.fill();
+            }
         } else if (this.state === 'belly_poke' || this.state === 'petting') {
-            this.ctx.fillStyle = '#800f2f';
-            this.ctx.beginPath();
-            this.ctx.arc(0, 6, 26, 0, Math.PI);
-            this.ctx.fill();
-
-            this.ctx.fillStyle = '#ff758f';
-            this.ctx.beginPath();
-            this.ctx.arc(0, 18, 16, 0, Math.PI);
-            this.ctx.fill();
+            // Big smile
+            c.fillStyle = '#8a0e35';
+            c.beginPath();
+            c.arc(0, 4, 24, 0.1, Math.PI - 0.1);
+            c.fill();
+            c.fillStyle = '#ff758f';
+            c.beginPath();
+            c.arc(0, 14, 14, 0, Math.PI);
+            c.fill();
         } else if (this.state === 'dizzy' || this.state === 'slap_left' || this.state === 'slap_right' || this.state === 'foot_poke') {
-            this.ctx.fillStyle = '#800f2f';
-            this.ctx.beginPath();
-            this.ctx.ellipse(0, 14, 22, 18, 0, 0, Math.PI * 2);
-            this.ctx.fill();
+            // Shocked "O" mouth
+            c.fillStyle = '#8a0e35';
+            c.beginPath();
+            c.ellipse(0, 14, 16, 20, 0, 0, Math.PI * 2);
+            c.fill();
+            c.fillStyle = '#ff758f';
+            c.beginPath();
+            c.ellipse(0, 22, 10, 8, 0, 0, Math.PI);
+            c.fill();
+        } else if (this.state === 'farting') {
+            // Cringe smile
+            c.strokeStyle = '#4a535e';
+            c.lineWidth = 3;
+            c.beginPath();
+            c.moveTo(-18, 10);
+            for (let i = 0; i < 6; i++) {
+                c.lineTo(-18 + i * 7.2, 10 + ((i % 2) ? -4 : 4));
+            }
+            c.stroke();
         } else {
-            this.ctx.strokeStyle = '#334155';
-            this.ctx.lineWidth = 3.5;
-            this.ctx.lineCap = 'round';
-
-            this.ctx.beginPath();
-            this.ctx.arc(-14, 4, 14, 0.2, Math.PI - 0.4);
-            this.ctx.stroke();
-
-            this.ctx.beginPath();
-            this.ctx.arc(14, 4, 14, 0.4, Math.PI - 0.2);
-            this.ctx.stroke();
+            // Default cat smile (two curves)
+            c.strokeStyle = '#3a444e';
+            c.lineWidth = 3;
+            c.lineCap = 'round';
+            c.beginPath();
+            c.arc(-12, 4, 12, 0.2, Math.PI - 0.4);
+            c.stroke();
+            c.beginPath();
+            c.arc(12, 4, 12, 0.4, Math.PI - 0.2);
+            c.stroke();
         }
 
-        this.ctx.restore();
+        c.restore();
     }
 
-    drawMilkBowl(cx, cy) {
-        this.ctx.save();
-        
-        this.ctx.fillStyle = '#38bdf8';
-        this.ctx.beginPath();
-        this.ctx.ellipse(cx, cy + 120, 65, 30, 0, 0, Math.PI * 2);
-        this.ctx.fill();
+    /* ─── Milk Bowl ─── */
+    _drawMilkBowl(cx, cy) {
+        const c = this.ctx;
+        c.save();
 
-        this.ctx.fillStyle = '#ffffff';
-        this.ctx.beginPath();
-        this.ctx.ellipse(cx, cy + 114, 55, 22, 0, 0, Math.PI * 2);
-        this.ctx.fill();
+        // Bowl
+        const bg = c.createLinearGradient(cx - 60, cy, cx + 60, cy + 30);
+        bg.addColorStop(0, '#60a5fa');
+        bg.addColorStop(1, '#3b82f6');
+        c.fillStyle = bg;
+        c.beginPath();
+        c.ellipse(cx, cy + 10, 60, 28, 0, 0, Math.PI * 2);
+        c.fill();
 
-        this.ctx.restore();
+        // Milk
+        c.fillStyle = '#fff';
+        c.beginPath();
+        c.ellipse(cx, cy + 4, 50, 20, 0, 0, Math.PI * 2);
+        c.fill();
+
+        // Rim highlight
+        c.strokeStyle = 'rgba(255,255,255,0.4)';
+        c.lineWidth = 2;
+        c.beginPath();
+        c.ellipse(cx, cy + 10, 60, 28, 0, Math.PI + 0.3, Math.PI * 2 - 0.3);
+        c.stroke();
+
+        c.restore();
     }
 
-    drawParticles(headX, headY) {
-        this.ctx.save();
+    /* ─── Particles ─── */
+    _drawParticles(hx, hy) {
+        const c = this.ctx;
+        c.save();
 
-        this.particles.forEach(p => {
-            if (p.type === 'star') {
-                const sx = headX + Math.cos(p.angle) * p.radius;
-                const sy = headY - 40 + Math.sin(p.angle) * (p.radius * 0.4);
+        for (const p of this.particles) {
+            c.globalAlpha = Math.max(0, p.life);
 
-                this.ctx.fillStyle = '#facc15';
-                this.ctx.beginPath();
-                this.ctx.arc(sx, sy, p.scale, 0, Math.PI * 2);
-                this.ctx.fill();
-            } else if (p.type === 'heart') {
-                this.ctx.globalAlpha = Math.max(0, p.life);
-                this.ctx.fillStyle = '#ff4d6d';
-                this.ctx.beginPath();
-                this.ctx.arc(p.x, p.y, p.size / 2, 0, Math.PI * 2);
-                this.ctx.fill();
-            } else if (p.type === 'fart') {
-                this.ctx.globalAlpha = Math.max(0, p.life * 0.5);
-                this.ctx.fillStyle = '#84cc16';
-                this.ctx.beginPath();
-                this.ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-                this.ctx.fill();
-            } else if (p.type === 'impact') {
-                this.ctx.globalAlpha = Math.max(0, p.life);
-                this.ctx.fillStyle = '#ff3366';
-                this.ctx.beginPath();
-                this.ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-                this.ctx.fill();
+            switch (p.type) {
+                case 'star': {
+                    const sx = hx + Math.cos(p.angle) * p.r;
+                    const sy = hy - 50 + Math.sin(p.angle) * (p.r * 0.4);
+                    this._drawStarShape(c, sx, sy, p.sz);
+                    break;
+                }
+                case 'heart': {
+                    c.fillStyle = '#ff4d6d';
+                    this._drawHeartShape(c, p.x, p.y, p.sz);
+                    break;
+                }
+                case 'fart': {
+                    c.globalAlpha = Math.max(0, p.life * 0.45);
+                    c.fillStyle = '#84cc16';
+                    c.beginPath();
+                    c.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+                    c.fill();
+                    break;
+                }
+                case 'impact': {
+                    c.fillStyle = '#fbbf24';
+                    c.beginPath();
+                    c.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+                    c.fill();
+                    break;
+                }
             }
-        });
+        }
 
-        this.ctx.restore();
+        c.globalAlpha = 1;
+        c.restore();
+    }
+
+    _drawStarShape(c, x, y, sz) {
+        c.fillStyle = '#facc15';
+        c.beginPath();
+        for (let i = 0; i < 5; i++) {
+            const a = (i * 4 * Math.PI) / 5 - Math.PI / 2;
+            const r = (i % 2 === 0) ? sz : sz * 0.45;
+            if (i === 0) c.moveTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+            else c.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+        }
+        c.closePath();
+        c.fill();
+
+        // Star uses 10-point path for proper star shape
+        c.beginPath();
+        for (let i = 0; i < 10; i++) {
+            const a = (i * Math.PI) / 5 - Math.PI / 2;
+            const r = (i % 2 === 0) ? sz : sz * 0.42;
+            if (i === 0) c.moveTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+            else c.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+        }
+        c.closePath();
+        c.fill();
+    }
+
+    _drawHeartShape(c, x, y, sz) {
+        const s = sz / 30;
+        c.beginPath();
+        c.moveTo(x, y + 8 * s);
+        c.bezierCurveTo(x, y + 5 * s, x - 5 * s, y, x - 10 * s, y);
+        c.bezierCurveTo(x - 18 * s, y, x - 18 * s, y + 12 * s, x, y + 22 * s);
+        c.moveTo(x, y + 8 * s);
+        c.bezierCurveTo(x, y + 5 * s, x + 5 * s, y, x + 10 * s, y);
+        c.bezierCurveTo(x + 18 * s, y, x + 18 * s, y + 12 * s, x, y + 22 * s);
+        c.fill();
     }
 }

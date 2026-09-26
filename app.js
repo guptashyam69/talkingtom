@@ -1,221 +1,203 @@
 /**
- * Talking Tom Application Orchestrator
- * Connects UI elements, Audio Engine, Canvas Renderer, and user interactions.
+ * Talking Tom Game Orchestrator v2
+ * Connects UI, Audio Engine, and Canvas Renderer with
+ * multi-step hit reactions and smooth state transitions.
  */
 
 document.addEventListener('DOMContentLoaded', () => {
     const canvas = document.getElementById('tomCanvas');
     const statusPill = document.getElementById('statusPill');
     const statusText = document.getElementById('statusText');
-    const volumeMeterBar = document.getElementById('volumeMeterBar');
-    
-    // Action Buttons
+    const volumeBar = document.getElementById('volumeMeterBar');
+
     const micBtn = document.getElementById('micBtn');
     const milkBtn = document.getElementById('milkBtn');
     const fartBtn = document.getElementById('fartBtn');
     const slapBtn = document.getElementById('slapBtn');
     const petBtn = document.getElementById('petBtn');
 
-    // Settings Panel
-    const settingsToggleBtn = document.getElementById('settingsToggleBtn');
-    const closeSettingsBtn = document.getElementById('closeSettingsBtn');
+    const settingsToggle = document.getElementById('settingsToggleBtn');
     const settingsPanel = document.getElementById('settingsPanel');
+    const closeSettings = document.getElementById('closeSettingsBtn');
     const pitchSlider = document.getElementById('pitchSlider');
     const pitchVal = document.getElementById('pitchVal');
     const sensitivitySlider = document.getElementById('sensitivitySlider');
     const sensitivityVal = document.getElementById('sensitivityVal');
 
-    // Modal
     const startModal = document.getElementById('startModal');
-    const startAppBtn = document.getElementById('startAppBtn');
+    const startBtn = document.getElementById('startAppBtn');
 
-    // Initialize Audio Engine & Renderer
+    // ── Instantiate Engine & Renderer ──
     const audio = new TalkingTomAudio();
     const tom = new TalkingTomRenderer(canvas);
 
-    // Auto-fit canvas on window resize
-    function resizeCanvas() {
-        const wrapper = canvas.parentElement;
-        const width = Math.min(wrapper.clientWidth, 600);
-        const height = Math.min(wrapper.clientHeight, 650);
-        tom.resize(width, height);
+    function fitCanvas() {
+        const wrap = canvas.parentElement;
+        const w = Math.min(wrap.clientWidth, 580);
+        const h = Math.min(wrap.clientHeight, 640);
+        tom.resize(w, h);
     }
-    window.addEventListener('resize', resizeCanvas);
-    resizeCanvas();
+    window.addEventListener('resize', fitCanvas);
+    fitCanvas();
 
-    // ==========================================
-    // AUDIO ENGINE CALLBACKS
-    // ==========================================
-
+    // ── Audio callbacks ──
     audio.onStateChange = (state) => {
         statusPill.className = `status-pill ${state}`;
-        if (state === 'idle') {
-            statusText.textContent = 'Idle';
-            tom.setState('idle');
-        } else if (state === 'listening') {
-            statusText.textContent = 'Listening... Speak now!';
-            tom.setState('listening');
-        } else if (state === 'recording') {
-            statusText.textContent = 'Recording Voice...';
-            tom.setState('recording');
-        } else if (state === 'talking') {
-            statusText.textContent = 'Tom is Repeating!';
-            tom.setState('talking');
+        const labels = {
+            idle: 'Idle',
+            listening: 'Listening…',
+            recording: '● Recording',
+            talking: 'Tom is talking!'
+        };
+        statusText.textContent = labels[state] || state;
+        if (state === 'listening')  tom.setState('listening');
+        if (state === 'recording')  tom.setState('recording');
+        if (state === 'talking')    tom.setState('talking');
+        if (state === 'idle')       tom.setState('idle');
+    };
+
+    audio.onVolumeMeter = (lvl) => {
+        volumeBar.style.height = `${Math.min(100, lvl * 100)}%`;
+    };
+
+    // ── Hit zone reactions (multi-step: flinch → dizzy) ──
+    tom.onHitZone = (zone, hx, hy) => {
+        if (audio.isPlayingBack) return;
+
+        switch (zone) {
+            case 'head_left':
+                audio.playSlap();
+                tom.setState('slap_right', 400, hx, hy);
+                setTimeout(() => {
+                    audio.playDizzyChimes();
+                    tom.setState('dizzy', 2200);
+                }, 400);
+                break;
+
+            case 'head_right':
+                audio.playSlap();
+                tom.setState('slap_left', 400, hx, hy);
+                setTimeout(() => {
+                    audio.playDizzyChimes();
+                    tom.setState('dizzy', 2200);
+                }, 400);
+                break;
+
+            case 'head_top':
+                audio.playSlap();
+                tom.setState('slap_left', 300, hx, hy);
+                setTimeout(() => {
+                    tom.setState('slap_right', 300);
+                }, 300);
+                setTimeout(() => {
+                    audio.playDizzyChimes();
+                    tom.setState('dizzy', 2200);
+                }, 600);
+                break;
+
+            case 'belly':
+                audio.playGiggle();
+                tom.setState('belly_poke', 2000, hx, hy);
+                break;
+
+            case 'left_foot':
+            case 'right_foot':
+                audio.playOuch();
+                tom.setState('foot_poke', 1800, hx, hy);
+                break;
+
+            case 'tail':
+                audio.playMeow();
+                tom.setState('tail_pull', 1800, hx, hy);
+                break;
         }
     };
 
-    audio.onVolumeMeter = (level) => {
-        volumeMeterBar.style.height = `${Math.min(100, level * 100)}%`;
-    };
-
-    // ==========================================
-    // INTERACTIVE TOUCH / CLICK HIT ZONES
-    // ==========================================
-
-    let slapCycle = 0;
-
-    tom.onHitZone = (zone, x, y) => {
-        if (audio.isPlayingBack) return; // Don't interrupt while Tom is talking
-
-        if (zone === 'head_left') {
-            audio.playSlapLeft();
-            tom.setState('slap_left', 900, x, y);
-        } else if (zone === 'head_right') {
-            audio.playSlapRight();
-            tom.setState('slap_right', 900, x, y);
-        } else if (zone === 'head_center') {
-            audio.playHeavySlap();
-            tom.setState('dizzy', 2500, x, y);
-        } else if (zone === 'belly') {
-            audio.playGiggle();
-            tom.setState('belly_poke', 1800, x, y);
-        } else if (zone === 'left_foot' || zone === 'right_foot') {
-            audio.playOuch();
-            tom.setState('foot_poke', 1800, x, y);
-        } else if (zone === 'tail') {
-            audio.playMeow();
-            tom.setState('slap_right', 1200, x, y);
-        }
-    };
-
-    // ==========================================
-    // ACTION BUTTON HANDLERS
-    // ==========================================
-
-    async function toggleMicrophone() {
+    // ── Action buttons ──
+    async function toggleMic() {
         if (!audio.isListening) {
-            const success = await audio.startMicrophone();
-            if (success) {
+            const ok = await audio.startMicrophone();
+            if (ok) {
                 micBtn.classList.add('active');
-                micBtn.querySelector('.btn-label').textContent = 'Stop Mic';
+                micBtn.querySelector('.btn-label').textContent = 'Stop';
             } else {
-                alert('Could not access microphone. Please check browser permissions.');
+                alert('Microphone access denied. Please allow in your browser settings.');
             }
         } else {
             audio.stopMicrophone();
             micBtn.classList.remove('active');
             micBtn.querySelector('.btn-label').textContent = 'Listen';
+            volumeBar.style.height = '0%';
         }
     }
 
-    micBtn.addEventListener('click', toggleMicrophone);
+    micBtn.addEventListener('click', toggleMic);
 
-    milkBtn.addEventListener('click', async () => {
+    milkBtn.addEventListener('click', () => {
         if (audio.isPlayingBack) return;
         audio.playMilkSlurp();
         tom.setState('drinking', 3000);
     });
 
-    fartBtn.addEventListener('click', async () => {
+    fartBtn.addEventListener('click', () => {
         if (audio.isPlayingBack) return;
         audio.playFart();
-        tom.setState('farting', 2000);
+        tom.setState('farting', 2200);
     });
 
-    slapBtn.addEventListener('click', async () => {
+    slapBtn.addEventListener('click', () => {
         if (audio.isPlayingBack) return;
-        const cx = tom.width / 2;
-        const cy = tom.height * 0.35;
-
-        slapCycle = (slapCycle + 1) % 3;
-        if (slapCycle === 0) {
-            audio.playSlapLeft();
-            tom.setState('slap_left', 900, cx - 40, cy);
-        } else if (slapCycle === 1) {
-            audio.playSlapRight();
-            tom.setState('slap_right', 900, cx + 40, cy);
-        } else {
-            audio.playHeavySlap();
-            tom.setState('dizzy', 2500, cx, cy);
-        }
+        audio.playSlap();
+        tom.setState('slap_left', 400, tom.cx, tom.baseY - 135);
+        setTimeout(() => {
+            audio.playDizzyChimes();
+            tom.setState('dizzy', 2200);
+        }, 400);
     });
 
-    petBtn.addEventListener('click', async () => {
+    petBtn.addEventListener('click', () => {
         if (audio.isPlayingBack) return;
         audio.playPurr();
-        tom.setState('petting', 2500);
+        tom.setState('petting', 2800);
     });
 
-    // ==========================================
-    // SETTINGS PANEL LOGIC
-    // ==========================================
-
-    settingsToggleBtn.addEventListener('click', () => {
-        settingsPanel.classList.toggle('open');
-    });
-
-    closeSettingsBtn.addEventListener('click', () => {
-        settingsPanel.classList.remove('open');
-    });
+    // ── Settings panel ──
+    settingsToggle.addEventListener('click', () => settingsPanel.classList.toggle('open'));
+    closeSettings.addEventListener('click', () => settingsPanel.classList.remove('open'));
 
     pitchSlider.addEventListener('input', (e) => {
-        const val = parseFloat(e.target.value);
-        pitchVal.textContent = `${val.toFixed(2)}x`;
-        audio.setPitchRatio(val);
+        const v = parseFloat(e.target.value);
+        pitchVal.textContent = `${v.toFixed(2)}x`;
+        audio.setPitchRatio(v);
     });
 
     sensitivitySlider.addEventListener('input', (e) => {
-        const val = parseFloat(e.target.value);
-        sensitivityVal.textContent = val.toFixed(3);
-        audio.setVadThreshold(val);
+        const v = parseFloat(e.target.value);
+        sensitivityVal.textContent = v.toFixed(3);
+        audio.setVadThreshold(v);
     });
 
-    // ==========================================
-    // START MODAL / PERMISSION PROMPT
-    // ==========================================
-
-    startAppBtn.addEventListener('click', async () => {
+    // ── Start modal ──
+    startBtn.addEventListener('click', async () => {
         await audio.init();
         startModal.style.opacity = '0';
-        setTimeout(() => {
-            startModal.style.display = 'none';
-        }, 300);
-        
-        // Auto start listening
-        toggleMicrophone();
+        setTimeout(() => { startModal.style.display = 'none'; }, 300);
+        toggleMic();
     });
 
-    // ==========================================
-    // MAIN GAME LOOP (60 FPS)
-    // ==========================================
-
-    function gameLoop() {
-        // Update renderer physics & particles
+    // ── Main Game Loop ──
+    function loop() {
         tom.update();
 
-        // Update mouth opening level when Tom repeats voice back
         if (audio.isPlayingBack) {
-            const vol = audio.getPlaybackVolume();
-            tom.setMouthOpen(vol);
-        } else if (tom.state !== 'talking') {
+            tom.setMouthOpen(audio.getPlaybackVolume() * 1.6);
+        } else {
             tom.setMouthOpen(0);
         }
 
-        // Render Tom
         tom.draw();
-
-        requestAnimationFrame(gameLoop);
+        requestAnimationFrame(loop);
     }
 
-    gameLoop();
+    loop();
 });
